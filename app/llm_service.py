@@ -1,9 +1,16 @@
+import time
 from openai import OpenAI
-
 from app.config import OPENAI_API_KEY
 
-
 client = OpenAI(api_key=OPENAI_API_KEY)
+INPUT_COST_PER_1K = 0.00015
+OUTPUT_COST_PER_1K = 0.00060
+
+
+def estimate_cost(input_tokens: int, output_tokens: int) -> float:
+    input_cost = (input_tokens / 1000) * INPUT_COST_PER_1K
+    output_cost = (output_tokens / 1000) * OUTPUT_COST_PER_1K
+    return round(input_cost + output_cost, 6)
 
 
 def build_rag_context(sources: list) -> str:
@@ -22,7 +29,7 @@ def build_rag_context(sources: list) -> str:
     return "\n\n".join(context_parts)
 
 
-def generate_rag_answer(query: str, sources: list) -> str:
+def generate_rag_answer(query: str, sources: list):
     context = build_rag_context(sources)
 
     prompt = f"""
@@ -41,15 +48,29 @@ Retrieved Context:
 Answer:
 """.strip()
 
+    start_time = time.perf_counter()
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt
     )
 
-    return response.output_text.strip()
+    latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    input_tokens = response.usage.input_tokens if response.usage else 0
+    output_tokens = response.usage.output_tokens if response.usage else 0
+    cost_usd = estimate_cost(input_tokens, output_tokens)
+
+    return {
+        "answer": response.output_text.strip(),
+        "latency_ms": latency_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd
+    }
 
 
-def generate_non_rag_answer(query: str) -> str:
+def generate_non_rag_answer(query: str):
     prompt = f"""
 You are a customer support assistant.
 
@@ -62,12 +83,26 @@ User Query:
 Answer:
 """.strip()
 
+    start_time = time.perf_counter()
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt
     )
 
-    return response.output_text.strip()
+    latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    input_tokens = response.usage.input_tokens if response.usage else 0
+    output_tokens = response.usage.output_tokens if response.usage else 0
+    cost_usd = estimate_cost(input_tokens, output_tokens)
+
+    return {
+        "answer": response.output_text.strip(),
+        "latency_ms": latency_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd
+    }
 
 
 def predict_priority_zero_shot(query: str):
@@ -86,10 +121,18 @@ Ticket:
 {query}
 """.strip()
 
+    start_time = time.perf_counter()
+
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt
     )
+
+    latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+    input_tokens = response.usage.input_tokens if response.usage else 0
+    output_tokens = response.usage.output_tokens if response.usage else 0
+    cost_usd = estimate_cost(input_tokens, output_tokens)
 
     text = response.output_text.strip()
 
@@ -106,4 +149,11 @@ Ticket:
             except ValueError:
                 confidence = 0.5
 
-    return label, confidence
+    return {
+        "label": label,
+        "confidence": confidence,
+        "latency_ms": latency_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd
+    }
