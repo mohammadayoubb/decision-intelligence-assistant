@@ -1,7 +1,14 @@
 from fastapi import FastAPI
-from app.schemas import AskRequest, AskResponse, MLPrediction
+
+from app.schemas import AskRequest, AskResponse, MLPrediction, SourceItem
 from app.feature_extractor import extract_features
 from app.ml_predictor import load_model_and_features, predict_priority
+from app.retriever import retrieve_similar_tickets
+from app.llm_service import (
+    generate_rag_answer,
+    generate_non_rag_answer,
+    predict_priority_zero_shot,
+)
 
 app = FastAPI(
     title="Decision Intelligence Assistant API",
@@ -9,7 +16,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Load model and feature names once when the app starts
+# Load model and feature names once at startup
 model, feature_names = load_model_and_features()
 
 
@@ -27,18 +34,33 @@ def health():
 def ask_question(request: AskRequest):
     query = request.query
 
-    # Extract engineered features from the user query
-    features = extract_features(query)
+    # 1. Retrieve similar tickets
+    sources_raw = retrieve_similar_tickets(query)
 
-    # Predict priority using the saved ML model
+    # 2. Generate answers
+    rag_answer = generate_rag_answer(query, sources_raw)
+    non_rag_answer = generate_non_rag_answer(query)
+
+    # 3. Extract features and run ML model
+    features = extract_features(query)
     ml_label, ml_confidence = predict_priority(model, feature_names, features)
 
-    # Placeholder outputs for now
-    rag_answer = "RAG answer placeholder"
-    non_rag_answer = "Non-RAG answer placeholder"
-    llm_zero_shot_label = "urgent"
-    llm_zero_shot_confidence = 0.85
-    sources = []
+    # Map numeric label to readable label
+    label_map = {"1": "urgent", "0": "normal"}
+    ml_label = label_map.get(ml_label, ml_label)
+
+    # 4. Run LLM zero-shot priority prediction
+    llm_label, llm_confidence = predict_priority_zero_shot(query)
+
+    # 5. Convert sources into SourceItem schema objects
+    sources = [
+        SourceItem(
+            tweet_id=source["tweet_id"],
+            text=source["text"],
+            score=source["score"]
+        )
+        for source in sources_raw
+    ]
 
     return AskResponse(
         query=query,
@@ -49,8 +71,8 @@ def ask_question(request: AskRequest):
             confidence=ml_confidence
         ),
         llm_zero_shot_prediction=MLPrediction(
-            label=llm_zero_shot_label,
-            confidence=llm_zero_shot_confidence
+            label=llm_label,
+            confidence=llm_confidence
         ),
         sources=sources
     )
