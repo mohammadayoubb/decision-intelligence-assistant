@@ -1,48 +1,29 @@
-from functools import lru_cache
+import os
+from qdrant_client import QdrantClient
 
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+COLLECTION_NAME = "support_tickets"
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+TOP_K = 3
 
-from app.config import RAG_DATA_PATH, TOP_K
-
-
-@lru_cache(maxsize=1)
-def load_rag_data():
-    df = pd.read_csv(RAG_DATA_PATH)
-
-    # Keep only rows with usable text
-    df = df.dropna(subset=["text"]).copy()
-    df["text"] = df["text"].astype(str)
-
-    return df
-
-
-@lru_cache(maxsize=1)
-def build_vector_store():
-    df = load_rag_data()
-
-    vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
-    matrix = vectorizer.fit_transform(df["text"])
-
-    return df, vectorizer, matrix
+client = QdrantClient(url=QDRANT_URL)
 
 
 def retrieve_similar_tickets(query: str, top_k: int = TOP_K):
-    df, vectorizer, matrix = build_vector_store()
+    results = client.query(
+        collection_name=COLLECTION_NAME,
+        query_text=query,
+        limit=top_k,
+    )
 
-    query_vector = vectorizer.transform([query])
-    similarities = cosine_similarity(query_vector, matrix).flatten()
+    formatted_results = []
 
-    top_indices = similarities.argsort()[::-1][:top_k]
+    for result in results:
+        payload = result.metadata if hasattr(result, "metadata") else result.payload
 
-    results = []
-    for idx in top_indices:
-        row = df.iloc[idx]
-        results.append({
-            "tweet_id": str(row["tweet_id"]),
-            "text": row["text"],
-            "score": float(similarities[idx])
+        formatted_results.append({
+            "tweet_id": str(payload.get("tweet_id", "")),
+            "text": payload.get("text", ""),
+            "score": float(result.score),
         })
 
-    return results
+    return formatted_results
